@@ -1,7 +1,8 @@
 # Introduction
 This Nagios-like plugin can be used to check the average traffic on Linux systems.
 It keeps track of the amount of bytes sent and received per interface with a state file.
-It supports thresholds and filters.
+It supports thresholds and filters. The `-v/--verbose` option can help debug
+what inclusion/exclusion rules are matched.
 
 # Requirements
 
@@ -27,6 +28,9 @@ object CheckCommand "traffic" {
     },
     "--bytes" = {
       set_if = "$traffic_use_bytes$"
+    },
+    "--include-netns" = {
+      set_if = "$traffic_include_netns$"
     },
     "--warning" = "$traffic_warning$",
     "--critical" = "$traffic_critical$",

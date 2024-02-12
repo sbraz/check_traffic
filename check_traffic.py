@@ -41,6 +41,22 @@ def human_size(string):
     return int(value), power
 
 
+def run_command(command):
+    try:
+        proc = subprocess.run(
+            command,
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise nagiosplugin.CheckError(
+            f"command {command} exited with status {exc.returncode}: {exc.stderr!r}"
+        )
+    logger.debug("Output from %s: %s", " ".join(command), proc.stdout)
+    return proc
+
+
 class Traffic(nagiosplugin.Resource):
     def __init__(self, args, args_hash):
         self.args = args
@@ -48,26 +64,36 @@ class Traffic(nagiosplugin.Resource):
         self.old_state = {}
         self.current_state = {"statistics": {}}
 
-    @classmethod
-    def _get_interfaces(cls):
-        command = ["ip", "-details", "-statistics", "-json", "link", "show"]
-        try:
-            proc = subprocess.run(
-                command,
-                check=True,
-                text=True,
-                capture_output=True,
-            )
-            execution_time = time.time()
-        except subprocess.CalledProcessError as exc:
-            raise nagiosplugin.CheckError(
-                f"command {command} exited with status {exc.returncode}: {exc.stderr!r}"
-            )
-        logger.debug("Output from %s: %s", " ".join(command), proc.stdout)
-        return execution_time, json.loads(proc.stdout)
+    def _get_interfaces(self):
+        netns_info = []
+        if self.args.include_netns:
+            command_output = run_command(["ip", "-json", "netns", "list"]).stdout
+            # If there are no namespaces, no JSON is returned
+            if command_output:
+                netns_info = json.loads(command_output)
+        interfaces = []
+        for netns in [None] + netns_info:
+            command = ["ip"]
+            if netns is None:
+                netns_name = None
+            else:
+                netns_name = netns["name"]
+                command += ["-netns", netns_name]
+            command += ["-details", "-statistics", "-json", "link", "show"]
+            interfaces_by_netns = json.loads(run_command(command).stdout)
+            for interface in interfaces_by_netns:
+                interface["netns_name"] = netns_name
+                if netns_name is None:
+                    interface["pretty_ifname"] = interface["ifname"]
+                else:
+                    interface["pretty_ifname"] = f"{netns_name}/{interface['ifname']}"
+            interfaces.extend(interfaces_by_netns)
+        execution_time = time.time()
+        return execution_time, interfaces
 
     def _include_interface(self, interface):
         interface_name = interface["ifname"]
+        interface_pretty_name = interface["pretty_ifname"]
         interface_type = interface["link_type"]
         if "linkinfo" in interface and "info_kind" in interface["linkinfo"]:
             interface_type = interface["linkinfo"]["info_kind"]
@@ -76,14 +102,14 @@ class Traffic(nagiosplugin.Resource):
         if not self.args.down and interface["operstate"] == "DOWN":
             logger.info(
                 "[-] Skipping interface %s (operstate DOWN)",
-                interface_name,
+                interface_pretty_name,
             )
             return False
         # Exclusions first
         if interface_type in self.args.exclude_type:
             logger.info(
                 "[-] Skipping interface %s (type %s matches %s)",
-                interface_name,
+                interface_pretty_name,
                 interface_type,
                 self.args.exclude_type,
             )
@@ -91,7 +117,7 @@ class Traffic(nagiosplugin.Resource):
         if self.args.exclude_name and re.search(self.args.exclude_name, interface_name):
             logger.info(
                 "[-] Skipping interface %s (name matches %s)",
-                interface_name,
+                interface_pretty_name,
                 self.args.exclude_name,
             )
             return False
@@ -115,14 +141,14 @@ class Traffic(nagiosplugin.Resource):
             logger.info(
                 "%s interface %s (%s)",
                 "[+] Including" if tests_match else "[-] Skipping",
-                interface_name,
+                interface_pretty_name,
                 ", ".join(messages),
             )
             return tests_match
         # If there are no inclusions, implicitly include the interface
         logger.info(
             "[+] Including interface %s of type %s (no inclusion filter specified)",
-            interface_name,
+            interface_pretty_name,
             interface_type,
         )
         return True
@@ -147,7 +173,7 @@ class Traffic(nagiosplugin.Resource):
                 cookie[key] = value
 
     def _probe_interface(self, interface):
-        interface_name = interface["ifname"]
+        interface_name = interface["pretty_ifname"]
         self.current_state["statistics"][interface_name] = {}
         for direction in ("rx", "tx"):
             self.current_state["statistics"][interface_name][direction] = interface["stats64"][
@@ -199,7 +225,9 @@ class Traffic(nagiosplugin.Resource):
         if not interfaces:
             raise nagiosplugin.CheckError("No interfaces found")
         filtered_interfaces = [e for e in interfaces if self._include_interface(e)]
-        logger.info("Included interfaces: %s", ", ".join(e["ifname"] for e in filtered_interfaces))
+        logger.info(
+            "Included interfaces: %s", ", ".join(e["pretty_ifname"] for e in filtered_interfaces)
+        )
         if not filtered_interfaces:
             raise nagiosplugin.CheckError("No matching interfaces found after applying filters")
         self.current_state["execution_time"] = execution_time
@@ -246,15 +274,21 @@ def parse_args():
         default=[],
     )
     filter_group.add_argument(
-        "-n", "--name", help="only select interfaces whose name matches this regex"
+        "-n", "--name", help="only select interfaces whose names match this regular expression"
     )
     filter_group.add_argument(
-        "-N", "--exclude-name", help="exclude interfaces whose name matches this regex"
+        "-N", "--exclude-name", help="exclude interfaces whose names match this regular expression"
     )
     filter_group.add_argument(
         "-d",
         "--down",
         help="include interfaces whose operstate is down",
+        action="store_true",
+        default=False,
+    )
+    filter_group.add_argument(
+        "--include-netns",
+        help='include interfaces from non-default network namespaces, the netns will be prepended to the interface name with a slash, e.g. "container/wg0"',
         action="store_true",
         default=False,
     )

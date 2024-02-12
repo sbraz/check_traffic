@@ -73,10 +73,11 @@ class Traffic(nagiosplugin.Resource):
                 netns_info = json.loads(command_output)
         interfaces = []
         for netns in [None] + netns_info:
-            command = ["ip"]
             if netns is None:
+                command = ["ip"]
                 netns_name = None
             else:
+                command = ["sudo", "-n", "ip"]
                 netns_name = netns["name"]
                 command += ["-netns", netns_name]
             command += ["-details", "-statistics", "-json", "link", "show"]

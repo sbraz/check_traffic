@@ -11,6 +11,7 @@ The script requires:
 * [`nagiosplugin`](https://nagiosplugin.readthedocs.io) version 1.2.4 or newer
 * iproute2 4.14.0 or newer
 * read-write access to `/tmp/` (where the state file is stored)
+* sudo if `--include-netns` is used
 
 # Integration with Icinga
 
@@ -36,4 +37,15 @@ object CheckCommand "traffic" {
     "--critical" = "$traffic_critical$",
   }
 }
+```
+
+# Example sudoers configuration
+
+Starting with sudo 1.9.10, it is possible to use regular expressions in sudoers
+files. The following example `/etc/sudoers.d/icinga2-check-traffic` file takes
+advantage of this feature. It will allow the check to work with network
+namespaces whose names are made up of simple alphanumeric characters and
+underscores, while minimizing the risk of injection.
+```
+icinga ALL=(ALL) NOPASSWD: /bin/ip ^-netns [a-zA-Z0-9_]+ -details -statistics -json link show$
 ```

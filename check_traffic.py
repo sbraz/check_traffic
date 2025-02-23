@@ -294,7 +294,8 @@ def parse_args():
     )
     filter_group.add_argument(
         "--include-netns",
-        help='include interfaces from non-default network namespaces, the netns will be prepended to the interface name with a slash, e.g. "container/wg0"',
+        help="include interfaces from non-default network namespaces, "
+        'the netns will be prepended to the interface name with a slash, e.g. "container/wg0"',
         action="store_true",
         default=False,
     )

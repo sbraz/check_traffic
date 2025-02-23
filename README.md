@@ -1,13 +1,14 @@
 # Introduction
 This Nagios-like plugin can be used to check the average traffic on Linux systems.
 It keeps track of the amount of bytes sent and received per interface with a state file.
+It also outputs statistics about dropped packets in its perfdata.
 It supports thresholds and filters. The `-v/--verbose` option can help debug
 what inclusion/exclusion rules are matched.
 
 # Requirements
 
 The script requires:
-* Python 3.7 or newer
+* Python 3.10 or newer
 * [`nagiosplugin`](https://nagiosplugin.readthedocs.io) version 1.2.4 or newer
 * iproute2 4.14.0 or newer
 * read-write access to `/tmp/` (where the state file is stored)

@@ -177,9 +177,11 @@ class Traffic(nagiosplugin.Resource):
         interface_name = interface["pretty_ifname"]
         self.current_state["statistics"][interface_name] = {}
         for direction in ("rx", "tx"):
-            self.current_state["statistics"][interface_name][direction] = interface["stats64"][
-                direction
-            ]["bytes"]
+            stats = interface["stats64"][direction]
+            self.current_state["statistics"][interface_name][f"{direction}"] = stats["bytes"]
+            self.current_state["statistics"][interface_name][f"{direction}_dropped"] = stats[
+                "dropped"
+            ]
         # Two cases where we can't compute the bandwidth:
         # 1. no old data, e.g. first run
         if not self.old_state:
@@ -194,29 +196,32 @@ class Traffic(nagiosplugin.Resource):
             return
         time_delta = self.current_state["execution_time"] - self.old_state["execution_time"]
         if self.args.bytes:
-            unit = "B"
+            traffic_unit = "B"
             multiplier = 1
         else:
-            unit = "b"
+            traffic_unit = "b"
             multiplier = 8
-        for direction, current_bytes in self.current_state["statistics"][interface_name].items():
-            bandwidth = (
-                multiplier
-                * (current_bytes - self.old_state["statistics"][interface_name][direction])
-                / time_delta
-            )
-            if bandwidth < 0:
+        for metric, current_value in self.current_state["statistics"][interface_name].items():
+            rate = (
+                current_value - self.old_state["statistics"][interface_name][metric]
+            ) / time_delta
+            if metric.endswith("_dropped"):
+                unit = None
+            else:
+                rate *= multiplier
+                unit = traffic_unit
+            if rate < 0:
                 yield nagiosplugin.Metric(
                     name="Warn",
                     value={
-                        "message": f"Counter for {interface_name}/{direction} is decreasing,"
+                        "message": f"Counter for {interface_name}/{metric} is decreasing,"
                         " this could be caused by a reboot"
                     },
                     context="metadata",
                 )
                 return
             yield nagiosplugin.Metric(
-                name=f"{interface_name}_{direction}", value=bandwidth, uom=unit, context=direction
+                name=f"{interface_name}_{metric}", value=rate, uom=unit, context=metric
             )
 
     def probe(self):
@@ -309,7 +314,7 @@ def parse_args():
         "--warning",
         metavar=("RX", "TX"),
         nargs=2,
-        help="warning threshold",
+        help="warning threshold for traffic",
         type=human_size,
     )
     threshold_group.add_argument(
@@ -317,7 +322,7 @@ def parse_args():
         "--critical",
         metavar=("RX", "TX"),
         nargs=2,
-        help="critical threshold",
+        help="critical threshold for traffic",
         type=human_size,
     )
     args = parser.parse_args()
@@ -342,12 +347,17 @@ class TrafficSummary(nagiosplugin.Summary):
     def verbose(self, results):
         messages = []
         for result in results:
-            if not result.context or result.context.name not in ("rx", "tx"):
+            if not result.context:
                 continue
-            human_readable_value = prettify_size(
-                result.metric.value, 1024 if result.metric.uom == "B" else 1000
-            )
-            messages.append(f"{result.metric.name} = {human_readable_value}{result.metric.uom}/s")
+            if result.context.name in ("rx", "tx"):
+                human_readable_value = prettify_size(
+                    result.metric.value, 1024 if result.metric.uom == "B" else 1000
+                )
+                messages.append(
+                    f"{result.metric.name} = {human_readable_value}{result.metric.uom}/s"
+                )
+            elif result.context.name in ("rx_dropped", "tx_dropped"):
+                messages.append(f"{result.metric.name} = {result.metric.value}/s")
         return "\n".join(messages)
 
     def problem(self, results):
@@ -381,7 +391,9 @@ def main(args):
         Traffic(args, args_hash),
         MetadataContext("metadata"),
         nagiosplugin.ScalarContext("rx", args.warning_rx, args.critical_rx),
+        nagiosplugin.ScalarContext("rx_dropped"),
         nagiosplugin.ScalarContext("tx", args.warning_tx, args.critical_tx),
+        nagiosplugin.ScalarContext("tx_dropped"),
         TrafficSummary(),
     )
     check.main(args.verbose)

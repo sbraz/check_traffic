@@ -17,6 +17,20 @@ logger = logging.getLogger("nagiosplugin")
 
 CHECK_NAME = pathlib.Path(__file__).name
 STATE_FILE_PATH = "/tmp"
+UPTIME_FILE_PATH = "/proc/uptime"
+# Grace period after a boot during which we do not report missing or reset counters
+REBOOT_GRACE = 600
+
+
+def recently_booted():
+    """Return True if the system has been up for less than REBOOT_GRACE seconds"""
+    try:
+        with open(UPTIME_FILE_PATH, encoding="ascii") as uptime_file:
+            uptime = float(uptime_file.read().split()[0])
+    except (OSError, IndexError, ValueError) as exc:
+        logger.debug("Could not read the uptime from %s: %s", UPTIME_FILE_PATH, exc)
+        return False
+    return uptime <= REBOOT_GRACE
 
 
 def prettify_size(size, multiplier):
@@ -160,8 +174,10 @@ class Traffic(nagiosplugin.Resource):
             if self.old_state:
                 logger.debug("Loaded old metrics from %s", state_file)
             else:
+                # The state file lives in /tmp and may not survive a reboot: no need
+                # to report a problem when the system has only just booted
                 yield nagiosplugin.Metric(
-                    name="Warn",
+                    name="Ok" if recently_booted() else "Warn",
                     value={"message": f"no data in state file {state_file}, first run?"},
                     context="metadata",
                 )
@@ -211,8 +227,10 @@ class Traffic(nagiosplugin.Resource):
                 rate *= multiplier
                 unit = traffic_unit
             if rate < 0:
+                # If /tmp survived a reboot, the old counters are still around while
+                # the kernel ones restarted from zero
                 yield nagiosplugin.Metric(
-                    name="Warn",
+                    name="Ok" if recently_booted() else "Warn",
                     value={
                         "message": f"Counter for {interface_name}/{metric} is decreasing,"
                         " this could be caused by a reboot"
@@ -343,7 +361,8 @@ def parse_args():
 
 class TrafficSummary(nagiosplugin.Summary):
     def ok(self, results):
-        return ""
+        # Only metadata results carry a hint when everything is OK
+        return ", ".join(result.hint for result in results if result.hint)
 
     def verbose(self, results):
         messages = []
